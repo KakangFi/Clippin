@@ -1,0 +1,15 @@
+import http from "node:http";
+import {readFile} from "node:fs/promises";
+import path from "node:path";
+import {fileURLToPath} from "node:url";
+const root=path.join(path.dirname(fileURLToPath(import.meta.url)),"public"),port=Number(process.env.PORT||3000);
+const mime={".html":"text/html; charset=utf-8",".js":"text/javascript; charset=utf-8",".css":"text/css; charset=utf-8",".json":"application/json; charset=utf-8"};
+function send(res,s,b,t="application/json; charset=utf-8"){res.writeHead(s,{"Content-Type":t,"X-Content-Type-Options":"nosniff","X-Frame-Options":"DENY"});res.end(typeof b==="string"?b:JSON.stringify(b))}
+const srv=http.createServer(async(req,res)=>{try{const u=new URL(req.url,`http://${req.headers.host||"localhost"}`);
+if(req.method==="GET"&&u.pathname==="/api/health")return send(res,200,{ok:true,aiConfigured:!!process.env.GEMINI_API_KEY});
+if(req.method==="POST"&&u.pathname==="/api/highlights"){if(!process.env.GEMINI_API_KEY)return send(res,503,{error:"AI belum diaktifkan. Tambahkan GEMINI_API_KEY di pengaturan server."});let raw="";for await(const c of req){raw+=c;if(Buffer.byteLength(raw)>20000)throw Error("Permintaan terlalu besar")}const b=JSON.parse(raw||"{}"),transcript=String(b.transcript||"").trim();if(!transcript)return send(res,400,{error:"Tempel transkrip terlebih dahulu."});
+const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(process.env.GEMINI_MODEL||"gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:`Pilih maksimal 5 bagian menarik dari transkrip ini untuk klip video 15-60 detik. Jangan mengarang timestamp; jika tidak ada timestamp, set startSeconds dan endSeconds ke null. Balas JSON array objek dengan title,startSeconds,endSeconds,reason,hook. Transkrip:\n${transcript.slice(0,12000)}`}]}],generationConfig:{temperature:.2,maxOutputTokens:1200,responseMimeType:"application/json"}})});
+const d=await r.json().catch(()=>({}));if(!r.ok)return send(res,502,{error:d?.error?.message||"AI gagal. Periksa API key atau kuota."});const txt=(d.candidates||[]).flatMap(c=>c.content?.parts||[]).map(p=>p.text||"").join("");try{return send(res,200,{highlights:JSON.parse(txt)})}catch{return send(res,502,{error:"Format jawaban AI tidak valid."})}}
+if(req.method==="GET"){const p=u.pathname==="/"?"/index.html":decodeURIComponent(u.pathname),file=path.join(root,path.normalize(p).replace(/^(\.\.[/\\])+/, ""));if(!file.startsWith(root))return send(res,403,{error:"Ditolak"});try{return send(res,200,await readFile(file),mime[path.extname(file)]||"application/octet-stream")}catch{return send(res,404,"Halaman tidak ditemukan","text/plain; charset=utf-8")}}
+return send(res,405,{error:"Metode tidak didukung"})}catch(e){return send(res,400,{error:e.message||"Kesalahan"})}});
+srv.listen(port,"0.0.0.0",()=>console.log(`ClipAI Studio berjalan pada port ${port}`));
